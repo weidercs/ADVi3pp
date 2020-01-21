@@ -798,7 +798,8 @@
 
 #if ENABLED(BLTOUCH)
 // @advi3++: Set delay for BLTouch
-  #define BLTOUCH_DELAY 100   // (ms) Enable and increase if needed
+// Increase the delay as it was too short for some BLTouch especially version 3.1
+  #define BLTOUCH_DELAY 500   // (ms) Enable and increase if needed
 
   /**
    * BLTouch V3.0 and newer smart series
@@ -825,7 +826,8 @@
   //#define WAIT_FOR_BED_HEATER     // Wait for bed to heat back up between probes (to improve accuracy)
 #endif
 #define PROBING_FANS_OFF          // Turn fans off when probing
-//#define DELAY_BEFORE_PROBING 200  // (ms) To prevent vibrations from triggering piezo sensors
+// #advi3++: Apparently, on some printers, vibrations are triggering the BLTouch, especially BLTouch 3.1
+#define DELAY_BEFORE_PROBING 400  // (ms) To prevent vibrations from triggering piezo sensors
 
 // A probe that is deployed and stowed with a solenoid pin (SOL1_PIN)
 //#define SOLENOID_PROBE
@@ -858,9 +860,9 @@
  *    (0,0)
  */
 // @advi3++: These are no more used by ADVi3++ since it is dynamic. Use instead advi3pp::x_probe_offset_from_extruder, ...
-#define X_PROBE_OFFSET_FROM_EXTRUDER 0   // X offset: -left  +right  [of the nozzle]
-#define Y_PROBE_OFFSET_FROM_EXTRUDER 0   // Y offset: -front +behind [the nozzle]
-#define Z_PROBE_OFFSET_FROM_EXTRUDER 0   // Z offset: -below +above  [the nozzle]
+//#define X_PROBE_OFFSET_FROM_EXTRUDER 0   // X offset: -left  +right  [of the nozzle]
+//#define Y_PROBE_OFFSET_FROM_EXTRUDER 0   // Y offset: -front +behind [the nozzle]
+//#define Z_PROBE_OFFSET_FROM_EXTRUDER 0   // Z offset: -below +above  [the nozzle]
 
 // Certain types of probes need to stay away from edges
 #define MIN_PROBE_EDGE 10
@@ -973,9 +975,9 @@
 #define Y_BED_SIZE 200
 
 // Travel limits (mm) after homing, corresponding to endstop positions.
-// @advi3++: The bed dimensions of Wanhao i3 Plus is 200x200x180, X offset is -6.5
-#define X_MIN_POS -6.5
-#define Y_MIN_POS 2.5
+// @advi3++: The bed dimensions of Wanhao i3 Plus is (officially) 200x200x180
+#define X_MIN_POS -5.0
+#define Y_MIN_POS 0
 #define Z_MIN_POS 0
 #define X_MAX_POS X_MIN_POS + X_BED_SIZE
 #define Y_MAX_POS Y_MIN_POS + Y_BED_SIZE
