@@ -40,6 +40,9 @@
 uint8_t progress_bar_percent;
 int16_t lcd_contrast;
 extern int freeMemory();
+extern bool pause_print(const float &retract, const point_t &park_point, const float &unload_length=0, bool show_lcd=false);
+extern void resume_print(const float &slow_load_length=0, const float &fast_load_length=0, const float &purge_length=ADVANCED_PAUSE_PURGE_LENGTH, int8_t max_beep_count=0);
+extern bool ensure_safe_temperature(AdvancedPauseMode mode=ADVANCED_PAUSE_MODE_PAUSE_PRINT);
 
 #ifdef ADVi3PP_PROBE
 bool set_probe_deployed(bool);
@@ -65,7 +68,7 @@ namespace
     };
 
     //! List of multipliers in Print Settings
-    const double PRINT_SETTINGS_MULTIPLIERS[] = {0.04, 0.08, 0.12};
+    const double BABYSTEPS_MULTIPLIERS[] = {0.04, 0.08, 0.12};
 
 #ifdef ADVi3PP_PROBE
     //! List of multipliers in Z-height Tuning
@@ -331,7 +334,7 @@ void Screens::show_print()
         return;
     }
 
-    wait.show(F("Try to access the SD card..."));
+    wait.show(F("Accessing the SD card..."));
     task.set_background_task(BackgroundTask{this, &Screens::show_sd_or_temp_page});
 }
 
@@ -363,12 +366,21 @@ Page Wait::do_prepare_page()
     return Page::Waiting;
 }
 
+void Wait::set_message(const FlashChar* message)
+{
+    WriteRamDataRequest frame{Variable::LongText0};
+    ADVString<48> message_to_send{message};
+    message_to_send.align(Alignment::Left);
+    frame << message_to_send;
+    frame.send();
+}
+
 //! Show a simple wait page with a message
 //! @param message  The message to display
 //! @param options  Options when displaying the page (i.e. save the current page or not)
 void Wait::show(const FlashChar* message, ShowOptions options)
 {
-    advi3pp.set_status(message);
+    set_message(message);
     back_ = nullptr;
     continue_ = nullptr;
     pages.show_page(Page::Waiting, options);
@@ -380,7 +392,7 @@ void Wait::show(const FlashChar* message, ShowOptions options)
 //! @param options  Options when displaying the page (i.e. save the current page or not)
 void Wait::show(const FlashChar* message, const WaitCallback& back, ShowOptions options)
 {
-    advi3pp.set_status(message);
+    set_message(message);
     back_ = back;
     continue_ = nullptr;
     pages.show_page(Page::WaitBack, options);
@@ -393,7 +405,7 @@ void Wait::show(const FlashChar* message, const WaitCallback& back, ShowOptions 
 //! @param options  Options when displaying the page (i.e. save the current page or not)
 void Wait::show(const FlashChar* message, const WaitCallback& back, const WaitCallback& cont, ShowOptions options)
 {
-    advi3pp.set_status(message);
+    set_message(message);
     back_ = back;
     continue_ = cont;
     pages.show_page(Page::WaitBackContinue, options);
@@ -405,7 +417,7 @@ void Wait::show(const FlashChar* message, const WaitCallback& back, const WaitCa
 //! @param options  Options when displaying the page (i.e. save the current page or not)
 void Wait::show_continue(const FlashChar* message, const WaitCallback& cont, ShowOptions options)
 {
-    advi3pp.set_status(message);
+    set_message(message);
     back_ = nullptr;
     continue_ = cont;
     pages.show_page(Page::WaitContinue, options);
@@ -416,27 +428,32 @@ void Wait::show_continue(const FlashChar* message, const WaitCallback& cont, Sho
 //! @param options  Options when displaying the page (i.e. save the current page or not)
 void Wait::show_continue(const FlashChar* message, ShowOptions options)
 {
-    advi3pp.set_status(message);
+    set_message(message);
     back_ = nullptr;
     continue_ = WaitCallback{this, &Wait::on_continue};
     pages.show_page(Page::WaitContinue, options);
 }
 
-//! Show a simple wait page without a message
-//! @param message  The message to display
-//! @param options  Options when displaying the page (i.e. save the current page or not)
-void Wait::show_continue(ShowOptions options)
+//! Ensure a print is not running and if so, display a message
+void Wait::show_back(const FlashChar* message, ShowOptions options)
 {
-    back_ = nullptr;
-    continue_ = WaitCallback{this, &Wait::on_continue};
-    advi3pp.buzz();
-    pages.show_page(Page::WaitContinue, options);
+    set_message(message);
+    back_ = WaitCallback{this, &Wait::on_back};
+    continue_ = nullptr;
+    pages.show_page(Page::WaitBack, options);
 }
 
 //! Default action when the continue button is pressed (inform Marlin)
 bool Wait::on_continue()
 {
     ::wait_for_user = false;
+    return false;
+}
+
+//! Action when the back button is pressed
+bool Wait::on_back()
+{
+    pages.show_back_page();
     return false;
 }
 
@@ -535,13 +552,20 @@ bool LoadUnload::do_dispatch(KeyValue key_value)
     return true;
 }
 
-//! Prepare the page before being displayed and return the right Page value
-//! @return The index of the page to display
-Page LoadUnload::do_prepare_page()
+void LoadUnload::send_data()
 {
     WriteRamDataRequest frame{Variable::Value0};
     frame << Uint16(advi3pp.get_last_used_temperature(TemperatureKind::Hotend));
     frame.send();
+}
+
+//! Prepare the page before being displayed and return the right Page value
+//! @return The index of the page to display
+Page LoadUnload::do_prepare_page()
+{
+    if(!print.ensure_not_printing())
+        return Page::None;
+    send_data();
     return Page::LoadUnload;
 }
 
@@ -556,9 +580,9 @@ void LoadUnload::prepare(const BackgroundTask& background)
         return;
     }
 
-    Uint16 hotend; frame >> hotend;
+    Uint16 temperature; frame >> temperature;
 
-    Temperature::setTargetHotend(hotend.word, 0);
+    Temperature::setTargetHotend(temperature.word, 0);
     enqueue_and_echo_commands_P(PSTR("M83"));       // relative E mode
     enqueue_and_echo_commands_P(PSTR("G92 E0"));    // reset E axis
 
@@ -584,7 +608,6 @@ bool LoadUnload::stop()
 {
     Log::log() << F("Load/Unload Stop") << Log::endl();
 
-    advi3pp.reset_status();
     task.set_background_task(BackgroundTask(this, &LoadUnload::stop_task));
     clear_command_queue();
     Temperature::setTargetHotend(0, 0);
@@ -609,13 +632,13 @@ void LoadUnload::stop_task()
 //! @param back_task    Background task to detect if the target temperature is reached and in this case, do step #2
 void LoadUnload::start_task(const char* command, const BackgroundTask& back_task)
 {
-    if(Temperature::current_temperature[0] >= Temperature::target_temperature[0] - 10)
+    if(Temperature::current_temperature[0] >= Temperature::target_temperature[0] - 10.0)
     {
         Log::log() << F("Load/Unload Filament") << Log::endl();
         advi3pp.buzz(); // Inform the user that the extrusion starts
         enqueue_and_echo_commands_P(command);
         task.set_background_task(back_task);
-        advi3pp.set_status(F("Press Back when the filament comes out..."));
+        wait.set_message(F("Press Back when the filament comes out..."));
     }
 }
 
@@ -628,7 +651,7 @@ void LoadUnload::load_start_task()
 //! Load the filament if the temperature is high enough.
 void LoadUnload::load_task()
 {
-    if(Temperature::current_temperature[0] >= Temperature::target_temperature[0] - 10)
+    if(Temperature::current_temperature[0] >= Temperature::target_temperature[0] - 10.0)
         enqueue_and_echo_commands_P(PSTR("G1 E1 F120"));
 }
 
@@ -641,7 +664,7 @@ void LoadUnload::unload_start_task()
 //! Unload the filament if the temperature is high enough.
 void LoadUnload::unload_task()
 {
-    if(Temperature::current_temperature[0] >= Temperature::target_temperature[0] - 10)
+    if(Temperature::current_temperature[0] >= Temperature::target_temperature[0] - 10.0)
         enqueue_and_echo_commands_P(PSTR("G1 E-1 F120"));
 }
 
@@ -676,6 +699,7 @@ void Preheat::do_write(EepromWrite& eeprom) const
     {
         eeprom.write(preset.hotend);
         eeprom.write(preset.bed);
+        eeprom.write(preset.fan);
     }
 }
 
@@ -687,6 +711,7 @@ void Preheat::do_read(EepromRead& eeprom)
     {
         eeprom.read(preset.hotend);
         eeprom.read(preset.bed);
+        eeprom.read(preset.fan);
     }
 }
 
@@ -705,7 +730,7 @@ void Preheat::do_reset()
 //! @return Number of bytes
 uint16_t Preheat::do_size_of() const
 {
-    return NB_PRESETS * (sizeof(Preset::hotend) + sizeof(Preset::bed));
+    return NB_PRESETS * (sizeof(Preset::hotend) + sizeof(Preset::bed) + sizeof(Preset::fan));
 }
 
 //! Send the presets t the LCD Panel
@@ -747,6 +772,8 @@ void Preheat::retrieve_presets()
 //! @return The index of the page to display
 Page Preheat::do_prepare_page()
 {
+    if(!print.ensure_not_printing())
+        return Page::None;
     send_presets();
     return Page::Preheat;
 }
@@ -778,28 +805,27 @@ void Preheat::do_save_command()
 
     const Preset& preset = presets_[index_];
 
-    ADVString<15> command;
+    // Avoid using queue functions because the buffer is small
 
-    command = F("M104 S"); command << preset.hotend;
-    enqueue_and_echo_command(command.get());
-
-    command = F("M140 S"); command << preset.bed;
-    enqueue_and_echo_command(command.get());
-
-    command = F("M106 S"); command << scale(preset.fan, 100, 255);
-    enqueue_and_echo_command(command.get());
+    thermalManager.setTargetHotend(preset.hotend, 0);
+    thermalManager.setTargetBed(preset.bed);
+    fanSpeeds[0] = scale(preset.fan, 100, 255);
 
     advi3pp.save_settings();
+    advi3pp.set_status(F("Preheat..."));
     temperatures.show(ShowOptions::None);
 }
 
 //! Cooldown the bed and the nozzle, turn off the fan
 void Preheat::cooldown_command()
 {
+    if(!print.ensure_not_printing())
+        return;
+
     Log::log() << F("Cooldown") << Log::endl();
-    advi3pp.reset_status();
+    advi3pp.set_status(F("Cooldown"));
     Temperature::disable_all_heaters();
-    enqueue_and_echo_commands_P(PSTR("M106 S0")); // Turn off fan
+    fanSpeeds[0] = 0; // Turn off fan
 }
 
 
@@ -832,6 +858,8 @@ bool Move::do_dispatch(KeyValue key_value)
 //! @return The index of the page to display
 Page Move::do_prepare_page()
 {
+    if(!print.ensure_not_printing())
+        return Page::None;
     Planner::finish_and_disable(); // To circumvent homing problems
     return Page::Move;
 }
@@ -971,6 +999,8 @@ bool SensorTuning::do_dispatch(KeyValue key_value)
 //! @return The index of the page to display
 Page SensorTuning::do_prepare_page()
 {
+    if(!print.ensure_not_printing())
+        return Page::None;
     return Page::SensorTuning;
 }
 
@@ -1019,6 +1049,8 @@ Page SensorTuning::do_prepare_page()
 //! @return The index of the page to display
 Page AutomaticLeveling::do_prepare_page()
 {
+    if(!print.ensure_not_printing())
+        return Page::None;
     sensor_interactive_leveling_ = true;
     pages.save_forward_page();
     wait.show(F("Homing..."));
@@ -1036,9 +1068,6 @@ void AutomaticLeveling::g29_leveling_finished(bool success)
 {
     if(!success)
     {
-        if(!sensor_interactive_leveling_)
-            print.send_stop_usb_print(); // Send even during a SD print because you may monitor with OctoPrint
-
         if(sensor_interactive_leveling_)
             wait.show(F("Leveling failed"), WaitCallback{this, &AutomaticLeveling::g29_leveling_failed});
         else
@@ -1057,8 +1086,15 @@ void AutomaticLeveling::g29_leveling_finished(bool success)
     }
     else
     {
-        enqueue_and_echo_commands_P(PSTR("M500"));      // Save settings (including mash)
-        enqueue_and_echo_commands_P(PSTR("M420 S1"));   // Set bed leveling state (enable)
+        settings.save();
+        // From gcode_M420
+        set_bed_leveling_enabled(true);
+        // Error if leveling failed to enable or reenable
+        if(!planner.leveling_active)
+        {
+            SERIAL_ERROR_START();
+            SERIAL_ERRORLNPGM(MSG_ERR_M420_FAILED);
+        }
     }
 }
 
@@ -1158,6 +1194,8 @@ void ManualLeveling::do_back_command()
 //! @return The index of the page to display
 Page ManualLeveling::do_prepare_page()
 {
+    if(!print.ensure_not_printing())
+        return Page::None;
     wait.show(F("Homing..."));
     ::axis_homed = 0;
     ::axis_known_position = 0;
@@ -1174,7 +1212,6 @@ void ManualLeveling::leveling_task()
         return;
 
     Log::log() << F("Leveling Homed, start process") << Log::endl();
-    advi3pp.reset_status();
     task.clear_background_task();
     pages.show_page(Page::ManualLeveling, ShowOptions::None);
 }
@@ -1397,7 +1434,7 @@ void SdCard::select_file_command(uint16_t file_index)
     card.startFileprint();
     PrintCounter::start();
 
-    pages.show_page(Page::Print);
+    pages.show_page(Page::Print, ShowOptions::None);
 }
 
 // --------------------------------------------------------------------
@@ -1415,7 +1452,7 @@ bool Print::do_dispatch(KeyValue value)
     switch(value)
     {
         case KeyValue::PrintStop:           stop_command(); break;
-        case KeyValue::PrintPause:          pause_command(); break;
+        case KeyValue::PrintPause:          pause_resume_command(); break;
         case KeyValue::PrintAdvancedPause:  advanced_pause_command(); break;
         default:                            return false;
     }
@@ -1433,53 +1470,55 @@ Page Print::do_prepare_page()
 //! Stop printing
 void Print::stop_command()
 {
+    if(!is_printing())
+        return;
+
+    wait.show(F("Stop printing..."), ShowOptions::SaveBack);
     enqueue_and_echo_commands_P(PSTR("A1"));
 }
 
 //! Pause printing
-void Print::pause_command()
+void Print::pause_resume_command()
 {
+    if(!is_printing())
+        return;
+
+    wait.show(F("Pause printing..."), ShowOptions::SaveBack);
     enqueue_and_echo_commands_P(PSTR("A0"));
 }
 
 //! Advanced Pause for filament change
 void Print::advanced_pause_command()
 {
+    if(!is_printing())
+        return;
+
+    wait.show(F("Pausing..."), ShowOptions::SaveBack);
     enqueue_and_echo_commands_P(PSTR("M600"));
 }
 
 //! Process Stop (A1) code and actually stop the print (if any running).
 void Print::process_stop_code()
 {
-    if(!is_printing())
-        return;
-
-    wait.show(F("Stop printing..."), ShowOptions::SaveBack);
-    if(is_usb_printing())
-        send_stop_usb_print();
-
     pause_print(PAUSE_PARK_RETRACT_LENGTH, NOZZLE_PARK_POINT, 0, true);
 
     thermalManager.disable_all_heaters();
     fanSpeeds[0] = 0;
-
     planner.quick_stop();
     print_job_timer.stop();
+    clear_command_queue();
 
     advi3pp.set_status(F("Print Stopped"));
+    pages.show_back_page();
     pages.show_back_page();
 }
 
 //! Process Pause (A0) code and actually pause the print (if any running).
-void Print::process_pause_code()
+void Print::process_pause_resume_code()
 {
-    if(!is_printing())
-        return;
-
-    wait.show(F("Pause printing..."), ShowOptions::SaveBack);
     if (!pause_print(PAUSE_PARK_RETRACT_LENGTH, NOZZLE_PARK_POINT, 0, true))
     {
-        pause_finished(false);
+        pages.show_back_page();
         return;
     }
 
@@ -1515,11 +1554,10 @@ void Print::process_pause_code()
     resume_print(0, 0, ADVANCED_PAUSE_PURGE_LENGTH, 0);
     print_job_timer.start();
 
-    pause_finished(true);
+    pages.show_back_page();
 }
 
-//! Pause command done, show the back page
-void Print::pause_finished(bool)
+void Print::pause_finished()
 {
     pages.show_back_page();
 }
@@ -1534,19 +1572,13 @@ bool Print::is_printing() const
         return print_job_timer.isRunning();
 }
 
-//! Check if there is currently a print running (USB)
-//! @return True if a USB print is running.
-bool Print::is_usb_printing() const
+bool Print::ensure_not_printing()
 {
-    return print_job_timer.isRunning();
-}
+    if(!is_printing())
+        return true;
 
-//! Send Stop print to the host.
-//! Unfortunately, there no way to properly do this except disconnecting the host.
-void Print::send_stop_usb_print()
-{
-    // "disconnect" is the only standard command to stop an USB print
-    SERIAL_ECHOLNPGM("//action:disconnect");
+    wait.show_back(F("Not accessible when printing"));
+    return false;
 }
 
 // --------------------------------------------------------------------
@@ -1571,14 +1603,14 @@ void AdvancedPause::advanced_pause_show_message(const AdvancedPauseMessage messa
     switch (message)
     {
         case ADVANCED_PAUSE_MESSAGE_INIT:                       wait.show(F("Pausing...")); break;
-        case ADVANCED_PAUSE_MESSAGE_UNLOAD:                     advi3pp.set_status(F("Unloading filament...")); break;
+        case ADVANCED_PAUSE_MESSAGE_UNLOAD:                     wait.set_message(F("Unloading filament...")); break;
         case ADVANCED_PAUSE_MESSAGE_INSERT:                     insert_filament(); break;
-        case ADVANCED_PAUSE_MESSAGE_LOAD:                       advi3pp.set_status(F("Loading...")); break;
-        case ADVANCED_PAUSE_MESSAGE_PURGE:                      advi3pp.set_status(F("Extruding some filament...")); break;
-        case ADVANCED_PAUSE_MESSAGE_CLICK_TO_HEAT_NOZZLE:       advi3pp.set_status(F("Press continue to heat")); break;
-        case ADVANCED_PAUSE_MESSAGE_RESUME:                     advi3pp.set_status(F("Resuming print...")); break;
+        case ADVANCED_PAUSE_MESSAGE_LOAD:                       wait.set_message(F("Loading...")); break;
+        case ADVANCED_PAUSE_MESSAGE_PURGE:                      wait.set_message(F("Extruding some filament...")); break;
+        case ADVANCED_PAUSE_MESSAGE_CLICK_TO_HEAT_NOZZLE:       wait.set_message(F("Press continue to heat")); break;
+        case ADVANCED_PAUSE_MESSAGE_RESUME:                     wait.set_message(F("Resuming print...")); break;
         case ADVANCED_PAUSE_MESSAGE_STATUS:                     break;
-        case ADVANCED_PAUSE_MESSAGE_WAIT_FOR_NOZZLES_TO_HEAT:   advi3pp.set_status(F("Waiting for heat...")); break;
+        case ADVANCED_PAUSE_MESSAGE_WAIT_FOR_NOZZLES_TO_HEAT:   wait.set_message(F("Waiting for heat...")); break;
         case ADVANCED_PAUSE_MESSAGE_OPTION:                     advanced_pause_menu_response = ADVANCED_PAUSE_RESPONSE_RESUME_PRINT; break;
         default: advi3pp::Log::log() << F("Unknown AdvancedPauseMessage: ") << static_cast<uint16_t>(message) << advi3pp::Log::endl(); break;
     }
@@ -1627,6 +1659,8 @@ bool SensorZHeight::do_dispatch(KeyValue key_value)
 //! @return The index of the page to display
 Page SensorZHeight::do_prepare_page()
 {
+    if(!print.ensure_not_printing())
+        return Page::None;
     pages.save_forward_page();
 
     zprobe_zoffset = 0;  // reset offset
@@ -1651,7 +1685,6 @@ void SensorZHeight::post_home_task()
         return;
 
     task.clear_background_task();
-    advi3pp.reset_status();
 
     reset();
 
@@ -1721,7 +1754,7 @@ double SensorZHeight::get_multiplier_value() const
     if(multiplier_ < Multiplier::M1 || multiplier_ > Multiplier::M3)
     {
         Log::error() << F("Invalid multiplier value: ") << static_cast<uint16_t >(multiplier_) << Log::endl();
-        return PRINT_SETTINGS_MULTIPLIERS[0];
+        return SENSOR_Z_HEIGHT_MULTIPLIERS[0];
     }
 
     return SENSOR_Z_HEIGHT_MULTIPLIERS[static_cast<uint16_t>(multiplier_)];
@@ -1766,26 +1799,34 @@ Page SensorZHeight::do_prepare_page()
 //! @return             True if the action was handled
 bool ExtruderTuning::do_dispatch(KeyValue key_value)
 {
+    switch(key_value)
+    {
+        case KeyValue::TuningStart:     start_command(); return true;
+        case KeyValue::TuningSettings:  settings_command(); return true;
+        default:                        break;
+    }
+
+    // Do this after since we handle Save before
     if(Parent::do_dispatch(key_value))
         return true;
 
-    switch(key_value)
-    {
-        case KeyValue::TuningStart:     start_command(); break;
-        case KeyValue::TuningSettings:  settings_command(); break;
-        default:                        return false;
-    }
+    return false;
+}
 
-    return true;
+void ExtruderTuning::send_data()
+{
+    WriteRamDataRequest frame{Variable::Value0};
+    frame << Uint16(advi3pp.get_last_used_temperature(TemperatureKind::Hotend));
+    frame.send();
 }
 
 //! Prepare the page before being displayed and return the right Page value
 //! @return The index of the page to display
 Page ExtruderTuning::do_prepare_page()
 {
-    WriteRamDataRequest frame{Variable::Value0};
-    frame << Uint16(advi3pp.get_last_used_temperature(TemperatureKind::Hotend));
-    frame.send();
+    if(!print.ensure_not_printing())
+        return Page::None;
+    send_data();
     return Page::ExtruderTuningTemp;
 }
 
@@ -1799,9 +1840,9 @@ void ExtruderTuning::start_command()
         return;
     }
 
-    Uint16 hotend; frame >> hotend;
+    Uint16 temperature; frame >> temperature;
     wait.show(F("Heating the extruder..."), WaitCallback{this, &ExtruderTuning::cancel}, ShowOptions::None);
-    Temperature::setTargetHotend(hotend.word, 0);
+    Temperature::setTargetHotend(temperature.word, 0);
 
     task.set_background_task(BackgroundTask(this, &ExtruderTuning::heating_task));
 }
@@ -1813,7 +1854,7 @@ void ExtruderTuning::heating_task()
         return;
     task.clear_background_task();
 
-    advi3pp.set_status(F("Wait until the extrusion is finished..."));
+    wait.set_message(F("Wait until the extrusion is finished..."));
     enqueue_and_echo_commands_P(PSTR("G1 Z20 F1200"));   // raise head
     enqueue_and_echo_commands_P(PSTR("M83"));           // relative E mode
     enqueue_and_echo_commands_P(PSTR("G92 E0"));        // reset E axis
@@ -1835,7 +1876,6 @@ void ExtruderTuning::extruding_task()
 
     Temperature::setTargetHotend(0, 0);
     task.clear_background_task();
-    advi3pp.reset_status();
     finished();
 }
 
@@ -1848,7 +1888,7 @@ void ExtruderTuning::finished()
 
     task.clear_background_task();
 
-    // Always set ny default 20mm
+    // Always set to default 20mm
     WriteRamDataRequest frame{Variable::Value0};
     frame << 200_u16; // 20.0
     frame.send();
@@ -1928,6 +1968,8 @@ bool PidTuning::do_dispatch(KeyValue key_value)
 //! @return The index of the page to display
 Page PidTuning::do_prepare_page()
 {
+    if(!print.ensure_not_printing())
+        return Page::None;
     pages.save_forward_page();
     hotend_command();
     advi3pp.reset_status();
@@ -1971,8 +2013,7 @@ void PidTuning::step2_command()
         return;
     }
 
-    Uint16 temperature; frame >> temperature; temperature_ = temperature.word;
-
+    Uint16 temperature, kind; frame >> temperature >> kind; temperature_ = temperature.word; // kind is not used here, it is already set
     if(kind_ == TemperatureKind::Hotend)
         enqueue_and_echo_commands_P(PSTR("M106 S255")); // Turn on fan (only for hotend)
 
@@ -2238,28 +2279,28 @@ int SensorSettings::y_probe_offset_from_extruder() const
 //! @return The position reachable (left).
 int SensorSettings::left_probe_bed_position()
 {
-    return max(X_MIN_BED + (MIN_PROBE_EDGE), X_MIN_POS + x_probe_offset_from_extruder());
+    return max(X_MIN_BED + MIN_PROBE_EDGE, X_MIN_POS + x_probe_offset_from_extruder());
 }
 
 //! Get the position of the bed (depending of the sensor holder).
 //! @return The position reachable (right).
 int SensorSettings::right_probe_bed_position()
 {
-    return min(X_MAX_BED - (MIN_PROBE_EDGE), X_MAX_POS + x_probe_offset_from_extruder());
+    return min(X_MAX_BED - MIN_PROBE_EDGE, X_MAX_POS + x_probe_offset_from_extruder());
 }
 
 //! Get the position of the bed (depending of the sensor holder).
 //! @return The position reachable (front).
 int SensorSettings::front_probe_bed_position()
 {
-    return max(Y_MIN_BED + (MIN_PROBE_EDGE), Y_MIN_POS + y_probe_offset_from_extruder());
+    return max(Y_MIN_BED + MIN_PROBE_EDGE, Y_MIN_POS + y_probe_offset_from_extruder());
 }
 
 //! Get the position of the bed (depending of the sensor holder).
 //! @return The position reachable (bottom).
 int SensorSettings::back_probe_bed_position()
 {
-    return min(Y_MAX_BED - (MIN_PROBE_EDGE), Y_MAX_POS + y_probe_offset_from_extruder());
+    return min(Y_MAX_BED - MIN_PROBE_EDGE, Y_MAX_POS + y_probe_offset_from_extruder());
 }
 
 #else
@@ -2456,7 +2497,6 @@ void LcdSettings::send_data() const
     frame.send();
 }
 
-
 // --------------------------------------------------------------------
 // Print Settings
 // --------------------------------------------------------------------
@@ -2488,10 +2528,10 @@ double PrintSettings::get_multiplier_value() const
     if(multiplier_ < Multiplier::M1 || multiplier_ > Multiplier::M3)
     {
         Log::error() << F("Invalid multiplier value: ") << static_cast<uint16_t >(multiplier_) << Log::endl();
-        return PRINT_SETTINGS_MULTIPLIERS[0];
+        return BABYSTEPS_MULTIPLIERS[0];
     }
 
-    return PRINT_SETTINGS_MULTIPLIERS[static_cast<uint16_t>(multiplier_)];
+    return BABYSTEPS_MULTIPLIERS[static_cast<uint16_t>(multiplier_)];
 }
 
 //! Send the current data to the LCD panel.
@@ -2718,55 +2758,93 @@ uint16_t PidSettings::do_size_of() const
 //! Set the current PID values from what is recorded
 void PidSettings::set_current_pid() const
 {
-    if(kind_ == TemperatureKind::Hotend)
+    switch(kind_)
     {
-        const Pid& pid = hotend_pid_[index_];
-
-        Temperature::Kp = pid.Kp_;
-        Temperature::Ki = scalePID_i(pid.Ki_);
-        Temperature::Kd = scalePID_d(pid.Kd_);
-
-        Log::log() << F("Set Hotend PID #") << index_ << F(" for temperature ") << pid.temperature_
-                   << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
+        case TemperatureKind::Hotend:  set_current_hotend_pid(); break;
+        case TemperatureKind::Bed:     set_current_bed_pid(); break;
+        default: assert("Invalid temperature Kind");
     }
-    else
-    {
-        const Pid& pid = bed_pid_[index_];
+}
 
-        Temperature::bedKp = pid.Kp_;
-        Temperature::bedKi = scalePID_i(pid.Ki_);
-        Temperature::bedKd = scalePID_d(pid.Kd_);
+void PidSettings::set_current_hotend_pid() const
+{
+    const Pid& pid = hotend_pid_[index_];
 
-        Log::log() << F("Set Bed PID #") << index_ << F(" for temperature ") << pid.temperature_
-                   << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
-    }
+    Temperature::Kp = pid.Kp_;
+    Temperature::Ki = scalePID_i(pid.Ki_);
+    Temperature::Kd = scalePID_d(pid.Kd_);
+
+    Log::log() << F("Set Hotend PID #") << index_ << F(" for temperature ") << pid.temperature_
+               << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
+}
+
+void PidSettings::set_current_bed_pid() const
+{
+    const Pid& pid = bed_pid_[index_];
+
+    Temperature::bedKp = pid.Kp_;
+    Temperature::bedKi = scalePID_i(pid.Ki_);
+    Temperature::bedKd = scalePID_d(pid.Kd_);
+
+    Log::log() << F("Set Bed PID #") << index_ << F(" for temperature ") << pid.temperature_
+               << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
 }
 
 //! Record the current PID values
 void PidSettings::get_current_pid()
 {
-    if(kind_ == TemperatureKind::Hotend)
+    switch(kind_)
     {
-        Pid& pid = hotend_pid_[index_];
-
-        pid.Kp_ = Temperature::Kp;
-        pid.Ki_ = unscalePID_i(Temperature::Ki);
-        pid.Kd_ = unscalePID_d(Temperature::Kd);
-
-        Log::log() << F("Get Hotend PID #") << index_
-                   << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
+        case TemperatureKind::Hotend:  get_current_hotend_pid(); break;
+        case TemperatureKind::Bed:     get_current_bed_pid(); break;
+        default: assert("Invalid temperature Kind");
     }
-    else
+}
+
+Pid* PidSettings::get_pid(TemperatureKind kind)
+{
+    switch(kind_)
     {
-        Pid& pid = bed_pid_[index_];
-
-        pid.Kp_ = Temperature::bedKp;
-        pid.Ki_ = unscalePID_i(Temperature::bedKi);
-        pid.Kd_ = unscalePID_d(Temperature::bedKd);
-
-        Log::log() << F("Get Hotend PID #") << index_
-                   << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
+        case TemperatureKind::Hotend:  return hotend_pid_;
+        case TemperatureKind::Bed:     return bed_pid_;
+        default: assert("Invalid temperature Kind"); return hotend_pid_;
     }
+}
+
+const Pid* PidSettings::get_pid(TemperatureKind kind) const
+{
+    switch(kind_)
+    {
+        case TemperatureKind::Hotend:  return hotend_pid_;
+        case TemperatureKind::Bed:     return bed_pid_;
+        default: assert("Invalid temperature Kind"); return hotend_pid_;
+    }
+}
+
+//! Record the current PID values
+void PidSettings::get_current_hotend_pid()
+{
+    Pid& pid = hotend_pid_[index_];
+
+    pid.Kp_ = Temperature::Kp;
+    pid.Ki_ = unscalePID_i(Temperature::Ki);
+    pid.Kd_ = unscalePID_d(Temperature::Kd);
+
+    Log::log() << F("Get Hotend PID #") << index_
+               << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
+}
+
+//! Record the current PID values
+void PidSettings::get_current_bed_pid()
+{
+    Pid& pid = bed_pid_[index_];
+
+    pid.Kp_ = Temperature::bedKp;
+    pid.Ki_ = unscalePID_i(Temperature::bedKi);
+    pid.Kd_ = unscalePID_d(Temperature::bedKd);
+
+    Log::log() << F("Get Hotend PID #") << index_
+               << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
 }
 
 //! Record new PID values for a given temperature
@@ -2775,7 +2853,7 @@ void PidSettings::get_current_pid()
 void PidSettings::add_pid(TemperatureKind kind, uint16_t temperature)
 {
     kind_ = kind;
-    Pid* pid = kind_ == TemperatureKind::Hotend ? hotend_pid_ : bed_pid_;
+    Pid* pid = get_pid(kind_);
     for(size_t i = 0; i < NB_PIDs; ++i)
     {
         if(temperature == pid[i].temperature_)
@@ -2807,7 +2885,7 @@ void PidSettings::set_best_pid(TemperatureKind kind, uint16_t temperature)
     kind_ = kind;
 
     uint16_t best_difference = 500;
-    Pid* pid = kind_ == TemperatureKind::Hotend ? hotend_pid_ : bed_pid_;
+    Pid* pid = get_pid(kind_);
 
     for(size_t i = 0; i < NB_PIDs; ++i)
     {
@@ -2827,7 +2905,7 @@ void PidSettings::set_best_pid(TemperatureKind kind, uint16_t temperature)
 //! Send the current data to the LCD panel.
 void PidSettings::send_data() const
 {
-    const Pid& pid = (kind_ == TemperatureKind::Hotend ? hotend_pid_ : bed_pid_)[index_];
+    const Pid& pid = get_pid(kind_)[index_];
     Log::log() << F("Send ") << (kind_ == TemperatureKind::Bed ? F("Bed") : F("Hotend")) << F(" PID #") << index_
                << F(", P = ") << pid.Kp_ << F(", I = ") << pid.Ki_ << F(", D = ") << pid.Kd_ << Log::endl();
 
@@ -2849,7 +2927,7 @@ void PidSettings::send_data() const
 //! Save the settings from the LCD Panel.
 void PidSettings::save_data()
 {
-    Pid& pid = (kind_ == TemperatureKind::Hotend ? hotend_pid_ : bed_pid_)[index_];
+    Pid& pid = get_pid(kind_)[index_];
 
     ReadRamData response{Variable::Value0, 5};
     if(!response.send_and_receive())
@@ -2883,10 +2961,12 @@ void PidSettings::do_save_command()
 {
     save_data();
 
-    Pid& pid = (kind_ == TemperatureKind::Hotend ? hotend_pid_ : bed_pid_)[index_];
-    Temperature::Kp = pid.Kp_;
-    Temperature::Ki = pid.Ki_;
-    Temperature::Kd = pid.Kd_;
+    switch(kind_)
+    {
+        case TemperatureKind::Hotend:  save_hotend_pid(); break;
+        case TemperatureKind::Bed:     save_bed_pid(); break;
+        default: assert("Invalid temperature Kind");
+    }
 
     Parent::do_save_command();
 }
@@ -2897,6 +2977,22 @@ void PidSettings::do_back_command()
     advi3pp.restore_settings();
     pid_tuning.send_data();
     Parent::do_back_command();
+}
+
+void PidSettings::save_hotend_pid() const
+{
+    auto pid = get_pid(kind_)[index_];
+    Temperature::Kp = pid.Kp_;
+    Temperature::Ki = pid.Ki_;
+    Temperature::Kd = pid.Kd_;
+}
+
+void PidSettings::save_bed_pid() const
+{
+    auto pid = get_pid(kind_)[index_];
+    Temperature::bedKp = pid.Kp_;
+    Temperature::bedKi = pid.Ki_;
+    Temperature::bedKd = pid.Kd_;
 }
 
 // --------------------------------------------------------------------
@@ -3188,12 +3284,12 @@ ADVString<L>& convert_version(ADVString<L>& version, uint16_t hex_version)
 //! Send the different versions to the LCD screen.
 void Versions::send_versions() const
 {
-    ADVString<16> motherboard_version;
-    ADVString<16> motherboard_build;
+    ADVString<16> advi3pp_version;
+    ADVString<16> advi3pp_build;
     ADVString<16> dgus_version;
     ADVString<16> marlin_version{SHORT_BUILD_VERSION};
 
-    motherboard_build
+    advi3pp_build
         << (YEAR__ - 2000)
         << (MONTH__ < 10 ? "0" : "") << MONTH__
         << (DAY__   < 10 ? "0" : "") << DAY__
@@ -3201,15 +3297,14 @@ void Versions::send_versions() const
         << (MIN__   < 10 ? "0" : "") << MIN__
         << (SEC__   < 10 ? "0" : "") << SEC__;
 
-    convert_version(motherboard_version, advi3_pp_version).align(Alignment::Left);
-    motherboard_build.align(Alignment::Left);
+    convert_version(advi3pp_version, advi3_pp_version).align(Alignment::Left);
+    advi3pp_build.align(Alignment::Left);
     get_lcd_firmware_version(dgus_version).align(Alignment::Left);
     marlin_version.align(Alignment::Left);
 
-    WriteRamDataRequest frame{Variable::ADVi3ppMotherboardVersion};
-    frame << motherboard_version
-          << motherboard_build
-          << motherboard_version // TODO: Until I remove this field
+    WriteRamDataRequest frame{Variable::ADVi3ppVersion};
+    frame << advi3pp_version
+          << advi3pp_build
           << dgus_version
           << marlin_version;
     frame.send();

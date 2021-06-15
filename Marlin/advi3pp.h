@@ -36,6 +36,7 @@ using eeprom_read  = void (*)(int &pos, uint8_t* value, uint16_t size, uint16_t*
 namespace advi3pp {
 
 enum class TemperatureKind: uint8_t { Bed, Hotend };
+constexpr const unsigned nb_temperatures = 2;
 
 //! ADVi3++ public facade, i.e. interface between Marlin code and ADVi3++ code
 struct ADVi3pp
@@ -46,7 +47,7 @@ struct ADVi3pp
     static void idle();
     static void auto_pid_finished(bool success);
     static void g29_leveling_finished(bool success);
-    static void pause_finished(bool success);
+    static void pause_finished();
     static void write(eeprom_write write, int& eeprom_index, uint16_t& working_crc);
     static bool read(eeprom_read read, int& eeprom_index, uint16_t& working_crc);
     static void reset();
@@ -58,9 +59,9 @@ struct ADVi3pp
     static bool has_status();
     static void set_status(const char* message);
     static void set_status(const FlashChar* message);
-    static void set_status(const char* fmt, va_list& args);
     static void set_status(const FlashChar* fmt, va_list& args);
-    static void set_status_v(const FlashChar* fmt, ...);
+    static void set_auto_pid_progress(int index, int nb);
+    static void set_auto_bed_leveling_progress(int index, int nb, int x, int y);
     static void advanced_pause_show_message(AdvancedPauseMessage message);
     static void reset_status();
     static void buzz(long duration, uint16_t frequency = 0);

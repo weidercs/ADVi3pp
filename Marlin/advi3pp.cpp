@@ -109,6 +109,18 @@ inline namespace singletons
     extern AdvancedPause pause;
 }
 
+//! Transform a value from a scale to another one.
+//! @param value        Value to be transformed
+//! @param valueScale   Current scale of the value (maximal)
+//! @param targetScale  Target scale (maximum, i.e. including)
+//! @return             The scaled value
+int16_t scale(int16_t value, int16_t valueScale, int16_t targetScale)
+{
+    auto target = round(static_cast<double>(value) * targetScale / valueScale);
+    return target <= targetScale ? target : targetScale;
+}
+
+
 // --------------------------------------------------------------------
 // ADVi3++ implementation
 // --------------------------------------------------------------------
@@ -147,13 +159,13 @@ void ADVi3pp_::show_boot_page()
 //! Under GPLv3 provision 7(b), you are not authorized to remove or alter this notice.
 void ADVi3pp_::send_gplv3_7b_notice()
 {
-    SERIAL_ECHOLNPGM("Based on ADVi3++, Copyright (C) 2017-2019 Sebastien Andrivet");
+    SERIAL_ECHOLNPGM("Based on ADVi3++, Copyright (C) 2017-2020 Sebastien Andrivet");
 }
 
 //! Send the list of sponsors on the serial port (www.patreon.com/andrivet)
 void ADVi3pp_::send_sponsors()
 {
-    SERIAL_ECHOLNPGM("Sponsored by Alexander Cherenegar, Joshua");
+    SERIAL_ECHOLNPGM("Sponsored by Alexander Cherenegar");
 }
 
 //! Store presets in permanent memory.
@@ -307,7 +319,7 @@ void ADVi3pp_::update_progress()
         progress_bar_percent = card.percentDone();
 }
 
-//! Get the current Z height (optionaly multiplied by a factor)
+//! Get the current Z height (optionally multiplied by a factor)
 //! @return The current Z height in mm
 double ADVi3pp_::get_current_z_height(int multiply) const
 {
@@ -337,9 +349,9 @@ void ADVi3pp_::send_status_data(bool force_update)
 
     // Send the current status in one frame
     WriteRamDataRequest frame{Variable::TargetBed};
-    frame << Uint16(Temperature::target_temperature_bed)
+    frame << Uint16(Temperature::degTargetBed())
           << Uint16(Temperature::degBed())
-          << Uint16(Temperature::target_temperature[0])
+          << Uint16(Temperature::degTargetHotend(0))
           << Uint16(Temperature::degHotend(0))
           << Uint16(scale(fanSpeeds[0], 255, 100))
           << Uint16(get_current_z_height(100))
@@ -435,9 +447,10 @@ void ADVi3pp_::read_lcd_serial()
         case Action::MoveZMinus:            move.z_minus_command(); break;
         case Action::MoveEPlus:             move.e_plus_command(); break;
         case Action::MoveEMinus:            move.e_minus_command(); break;
-        case Action::LCDBrightness:         lcd_settings.change_brightness(static_cast<int16_t>(key_value)); break;
         case Action::BabyMinus:             print_settings.baby_minus_command(); break;
         case Action::BabyPlus:              print_settings.baby_plus_command(); break;
+        case Action::ZHeightMinus:          sensor_z_height.minus(); break;
+        case Action::ZHeightPlus:           sensor_z_height.plus(); break;
         case Action::FeedrateMinus:         print_settings.feedrate_minus_command(); break;
         case Action::FeedratePlus:          print_settings.feedrate_plus_command(); break;
         case Action::FanMinus:              print_settings.fan_minus_command(); break;
@@ -446,8 +459,7 @@ void ADVi3pp_::read_lcd_serial()
         case Action::HotendPlus:            print_settings.hotend_plus_command(); break;
         case Action::BedMinus:              print_settings.bed_minus_command(); break;
         case Action::BedPlus:               print_settings.bed_plus_command(); break;
-        case Action::ZHeightMinus:          sensor_z_height.minus(); break;
-        case Action::ZHeightPlus:           sensor_z_height.plus(); break;
+        case Action::LCDBrightness:         lcd_settings.change_brightness(static_cast<int16_t>(key_value)); break;
 
         default:                            Log::error() << F("Invalid action ") << static_cast<uint16_t>(action) << Log::endl(); break;
     }
@@ -481,11 +493,24 @@ void ADVi3pp_::set_status(const char* message)
 }
 
 //! Set a status to display (a message)
-void ADVi3pp_::set_status(const char* fmt, va_list& args)
+void ADVi3pp_::set_auto_pid_progress(int index, int nb)
 {
-    message_.set(fmt, args).align(Alignment::Left);
-    centered_.set(fmt, args).align(Alignment::Center);
-    has_status_ = true;
+    if(nb == 0)
+    {
+        advi3pp.set_status(F("PID tuning: waiting for heatup"));
+        return;
+    }
+
+    ADVString<48> message{F("PID tuning: cycle ")};
+    message.append(index + 1).append(F(" / ")).append(nb);
+    advi3pp.set_status(message.get());
+}
+
+void ADVi3pp_::set_auto_bed_leveling_progress(int index, int nb, int x, int y)
+{
+    ADVString<48> message{F("Level ")};
+    message.append(index + 1).append('/').append(nb).append(F(" @ ")).append(x).append(F(", ")).append(x).append(F(" mm"));
+    wait.set_message(message);
 }
 
 //! Set a status to display (a message)
@@ -515,7 +540,7 @@ void ADVi3pp_::reset_status()
 //! Handle Stop and Wait from the host: display a wait/continue page
 void ADVi3pp_::stop_and_wait()
 {
-    wait.show_continue();
+    wait.show_continue(message_);
 }
 
 //! Set the name for the progess message. Usually, it is the name of the file printed.
@@ -653,7 +678,7 @@ void ADVi3pp_::process_command(const GCodeParser& parser)
 {
     switch(parser.codenum)
     {
-        case 0: print.process_pause_code(); break;
+        case 0: print.process_pause_resume_code(); break;
         case 1: print.process_stop_code(); break;
         default: Log::error() << F("Invalid command ") << static_cast<uint16_t>(parser.codenum) << Log::endl(); break;
     }

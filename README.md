@@ -16,7 +16,7 @@ If you like what I am doing, please consider supporting me as a supporter on [**
 
 The objectives with this custom version (when compared with Wanhao stock firmwares) are the following:
 
-* Based on the latest version of Marlin available (currently: 1.1.9 + post 1.1.9 fixes)
+* Based on the latest version of Marlin available (currently: 1.1.9 + post 1.1.9 fixes, 2.0 is on the way)
 * As few modifications of the Marlin code as possible. The goal is to be able to port **ADVi3++** to new versions of Marlin with only a few effort.
 * Open source code.
 * Object-oriented code with as few hard-coded values as possible. For example, instead of constructing a frame by hand, use instances of classes that know how to construct themselves.
@@ -81,18 +81,18 @@ Thanks to [MarlinTeam](http://marlinfw.org/) for their great work.
 
 ## ADVi3++
 
-* Copyright &copy; 2017-2019 Sebastien Andrivet [GitHub ADVi3pp project](https://github.com/andrivet/advi3pp])
-* Copyright &copy; 2016-2019 [MarlinFirmware](https://github.com/MarlinFirmware/Marlin)
+* Copyright &copy; 2017-2020 Sebastien Andrivet [GitHub ADVi3pp project](https://github.com/andrivet/advi3pp])
+* Copyright &copy; 2016-2020 [MarlinFirmware](https://github.com/MarlinFirmware/Marlin)
 * Based on Sprinter and grbl.
 * Copyright &copy; 2011 Camiel Gubbels / Erik van der Zalm
 
 ## ADVi3++ LCD Panels
 
-* Copyright &copy; 2017-2019 Sebastien Andrivet [GitHub ADVi3pp project](https://github.com/andrivet/advi3pp])
+* Copyright &copy; 2017-2020 Sebastien Andrivet [GitHub ADVi3pp project](https://github.com/andrivet/advi3pp])
 
 ## ADVi3++ User Manual
 
-* Copyright &copy; 2018-2019 Sebastien Andrivet
+* Copyright &copy; 2018-2020 Sebastien Andrivet
 
 # License
 

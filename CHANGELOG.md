@@ -1,5 +1,24 @@
 # ADVi3++ Changelog
 
+## 4.0.6 (2020-02-23)
+
+* **#236** - platformio.ini file contained a configuration to upload the firmware using a Dragon AVR programmer
+* **#235** - Sometimes, message displayed on Wait screens was wrong
+* **#234** - Some actions should be disabled during a print
+* **#232** - Fan speed in Preset was not saved in EEPROM
+
+## 4.0.5 (2020-01-20)
+
+* **#230** - During pause (both normal and advanced), wait a moment just after purging the nozzle
+* **#229** - Publish a firmware to clear the EEPROM (to use when it is corrupted)
+* **#228** - Sometimes after flashing, the LCD screen displays distorted images
+* **#227** - Mark II: 4.0.4 Auto bed leveling stuck at homing
+* **#226** - Printer freeze when using BLTouch Y offset >= 8
+* **#223** - Disabling beeps does not work with some LCD displays
+* **#219** - After stopping a print the X, Y, and Z axis will all move when Z jog is pressed
+* **#218** - Fix (again) "(L,R,F,B) out of bounds" error
+* **#217** - Y axis jogs itself on first G0/G1 after power on
+
 ## 4.0.4 (2019-12-30)
 
 * **#224** - Fix ghost touch with BLTouch 3.1. See note bellow

@@ -41,10 +41,6 @@
 #include "ADVcrtp.h"
 #include "advi3pp_bitmasks.h"
 
-// From Marlin
-extern bool pause_print(const float &retract, const point_t &park_point, const float &unload_length=0, bool show_lcd=false);
-extern void resume_print(const float &slow_load_length=0, const float &fast_load_length=0, const float &purge_length=ADVANCED_PAUSE_PURGE_LENGTH, int8_t max_beep_count=0);
-extern bool ensure_safe_temperature(AdvancedPauseMode mode=ADVANCED_PAUSE_MODE_PAUSE_PRINT);
 
 namespace advi3pp {
 
@@ -78,7 +74,7 @@ struct SensorPosition { int16_t x, y; };
 //! @param valueScale   Current scale of the value (maximal)
 //! @param targetScale  Target scale
 //! @return             The scaled value
-inline int16_t scale(int16_t value, int16_t valueScale, int16_t targetScale) { return value * targetScale / valueScale; }
+int16_t scale(int16_t value, int16_t valueScale, int16_t targetScale);
 
 // --------------------------------------------------------------------
 // EEPROM Data Read & Write
@@ -203,13 +199,17 @@ struct Wait: Handler<Wait>
     void show(const FlashChar* message, const WaitCallback& back, const WaitCallback& cont, ShowOptions options = ShowOptions::SaveBack);
     void show_continue(const FlashChar* message, const WaitCallback& cont, ShowOptions options = ShowOptions::SaveBack);
     void show_continue(const FlashChar* message, ShowOptions options = ShowOptions::SaveBack);
-    void show_continue(ShowOptions options = ShowOptions::SaveBack);
+    template<size_t L> void show_continue(const ADVString<L>& message, ShowOptions options = ShowOptions::SaveBack);
+    void show_back(const FlashChar* message, ShowOptions options = ShowOptions::SaveBack);
+    void set_message(const FlashChar* message);
+    template<size_t L> void set_message(const ADVString<L>& message);
 
 private:
     Page do_prepare_page();
     void do_save_command();
     void do_back_command();
     bool on_continue();
+    bool on_back();
 
     WaitCallback back_;
     WaitCallback continue_;
@@ -256,6 +256,7 @@ private:
     void unload_start_task();
     void unload_task();
     void start_task(const char* command,  const BackgroundTask& back_task);
+    void send_data();
 
     friend Parent;
 };
@@ -467,18 +468,17 @@ private:
 //! Printing Page
 struct Print: Handler<Print>
 {
-    void process_pause_code();
-    void process_stop_code();
-    void pause_finished(bool success);
     bool is_printing() const;
-    bool is_usb_printing() const;
-    void send_stop_usb_print();
+    bool ensure_not_printing();
+    void process_pause_resume_code();
+    void process_stop_code();
+    void pause_finished();
 
 private:
     bool do_dispatch(KeyValue value);
     Page do_prepare_page();
     void stop_command();
-    void pause_command();
+    void pause_resume_command();
     void advanced_pause_command();
 
     friend Parent;
@@ -570,6 +570,7 @@ private:
     void extruding_task();
     void finished();
     bool cancel();
+    void send_data();
 
 private:
     static constexpr uint16_t tuning_extruder_filament = 100; //!< Filament to extrude (10 cm)
@@ -797,14 +798,22 @@ private:
     uint16_t do_size_of() const;
     void do_save_command();
     void do_back_command();
+     void save_bed_pid() const;
     void hotend_command();
+    void save_hotend_pid() const;
     void bed_command();
     void previous_command();
     void next_command();
     void set_current_pid() const;
+    void set_current_bed_pid() const;
+    void set_current_hotend_pid() const;
     void get_current_pid();
+    void get_current_bed_pid();
+    void get_current_hotend_pid();
     void send_data() const;
     void save_data();
+    Pid* get_pid(TemperatureKind kind);
+    const Pid* get_pid(TemperatureKind kind) const;
 
 private:
     static const size_t NB_PIDs = 3;
@@ -1102,7 +1111,8 @@ struct ADVi3pp_
 
     bool has_status();
     void set_status(const char* message);
-    void set_status(const char* fmt, va_list& args);
+    void set_auto_pid_progress(int index, int nb);
+    void set_auto_bed_leveling_progress(int index, int nb, int x, int y);
     void set_status(const FlashChar* message);
     void set_status(const FlashChar* fmt, va_list& args);
     void reset_status();
@@ -1144,7 +1154,7 @@ private:
     bool init_ = true;
     uint32_t usb_baudrate_ = BAUDRATE;
     Feature features_ = Feature::None;
-    uint16_t last_used_temperature_[2] = {default_bed_temperature, default_hotend_temperature};
+    uint16_t last_used_temperature_[nb_temperatures] = {default_bed_temperature, default_hotend_temperature};
     bool has_status_ = false;
     ADVString<message_length> message_;
     ADVString<message_length> centered_;
@@ -1263,8 +1273,29 @@ void Handler<Self>::do_back_command()
     pages.show_back_page();
 }
 
+// --------------------------------------------------------------------
+
+template<size_t L> void Wait::set_message(const ADVString<L>& message)
+{
+    WriteRamDataRequest frame{Variable::LongText0};
+    frame << message;
+    frame.send();
+}
 
 // --------------------------------------------------------------------
+//! Show a simple wait page without a message
+//! @param message  The message to display
+//! @param options  Options when displaying the page (i.e. save the current page or not)
+template<size_t L>
+void Wait::show_continue(const ADVString<L>& message, ShowOptions options)
+{
+    set_message(message);
+    back_ = nullptr;
+    continue_ = WaitCallback{this, &Wait::on_continue};
+    advi3pp.buzz();
+    pages.show_page(Page::WaitContinue, options);
+}
+
 
 }
 
